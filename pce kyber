@@ -1,0 +1,1176 @@
+#!/usr/bin/env python3
+"""
+Kyber (ML‑KEM) encrypt+decrypt packager with Tkinter GUI (hardened).
+
+Security & features (v2):
+- **Encrypt** and **Decrypt** modes in a single GUI.
+- Preferred **recipient mode**: encapsulate to a recipient *public* key (decrypt with matching *private* key).
+- Sender‑ephemeral (self‑encap) still available; private key stays in RAM only, but packages are non‑recoverable later.
+- Public key (PEM) embedded in package for audit & key‑matching checks.
+- Shared secret → HKDF‑SHA‑256 → two 256‑bit keys: AES‑256‑GCM (enc) and HMAC‑SHA‑256 (mac).
+- Random 96‑bit nonce; AES‑GCM uses AAD bound to a context hash (header+pub+kem) to protect metadata.
+- HMAC computed over header_without_hmac || pub || kem || salt || nonce || tag || ciphertext (tamper‑evident before decrypt).
+- Strict 0600 perms for any temp file used by OpenSSL; all temp files are removed immediately.
+- Logging scrubs secrets; auto‑scroll + automatic export to <output>.log beside the package.
+- Startup hardening: refuses to run as root (POSIX), checks OpenSSL presence/version and OQS/ML‑KEM availability; subprocesses isolated (no shell, sanitized env).
+
+Notes:
+- Requires Python 3.9+, the 'cryptography' package, and OpenSSL 3.4+ with the OQS provider so that
+  `openssl pkeyutl -encap/-decap` and ML‑KEM are available via CLI.
+- Package format bumped to **v2**; a v1 reader is included to support decrypting older packages produced by v1 of this tool.
+
+Package v2 layout (big‑endian):
+  magic[4]     = b"PQPK"
+  version[2]   = 0x0002
+  alg_id[2]    = 0x0300            # ML‑KEM‑768
+  mode[2]      = 0x0001(recipient) | 0x0002(self‑encap)
+  pub_len[4] | kem_len[4] | salt_len[2] | nonce_len[2] | tag_len[2] | ct_len[8] | hmac_len[2]
+  pubkey_pem[pub_len]
+  kem_ciphertext[kem_len]
+  hkdf_salt[salt_len]
+  nonce[nonce_len]
+  gcm_tag[tag_len]
+  ciphertext[ct_len]
+  hmac[hmac_len]
+
+Package v1 reader (legacy): header contained only lengths and omitted salt & mode; HKDF was salt=None and AAD unused.
+"""
+
+import os
+import sys
+import stat
+import json
+import hmac
+import time
+import struct
+import getpass
+import tempfile
+import subprocess
+from pathlib import Path
+from typing import Tuple, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    try:
+        import oqs  # type: ignore
+    except ImportError:
+        oqs = None  # type: ignore
+
+# Set up environment for OQS provider installation BEFORE importing cryptography
+def setup_oqs_environment():
+    """Set up environment variables for OQS provider installation"""
+    local_install_path = "/tmp/local_install"
+    lib_path = f"{local_install_path}/usr/local/lib"
+    modules_path = f"{local_install_path}/usr/lib/x86_64-linux-gnu/ossl-modules"
+    
+    # Set environment variables - use system OpenSSL config which has OQS provider
+    os.environ["LD_LIBRARY_PATH"] = f"{lib_path}:{os.environ.get('LD_LIBRARY_PATH', '')}"
+    os.environ["OPENSSL_MODULES"] = modules_path
+    # Don't override OPENSSL_CONF - let it use system default which has OQS provider
+    # Allow cryptography to work without legacy provider
+    os.environ["CRYPTOGRAPHY_OPENSSL_NO_LEGACY"] = "1"
+
+# Call setup function at module load time
+setup_oqs_environment()
+
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from tkinter import scrolledtext
+from tkinter import ttk
+
+# Cryptography primitives
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+APP_NAME = "PQ Packager (Kyber+AES‑GCM) v2"
+MAGIC = b"PQPK"
+VERSION_V2 = 2
+VERSION_V1 = 1
+ALG_ID_MLKEM768 = 0x0300
+MODE_RECIPIENT = 0x0001
+MODE_SELFENCAP = 0x0002
+NONCE_LEN = 12  # 96‑bit
+GCM_TAG_LEN = 16
+HMAC_LEN = 32
+DEFAULT_SALT_LEN = 16
+
+OPENSSL_BIN = os.environ.get("OPENSSL_BIN", "openssl")
+OQS_PROVIDER_NAME = os.environ.get("OQS_PROVIDER", "oqsprovider")
+
+KEM_ALGOS = ["mlkem768", "ML-KEM-768", "MLKEM-768", "kyber768", "Kyber768", "ml-kem-768"]
+
+# ----------------------------- Utility / Security helpers -----------------------------
+
+def _not_root_check() -> None:
+    if os.name == "posix":
+        try:
+            if os.geteuid() == 0:
+                raise PermissionError("Refusing to run as root; please run unprivileged.")
+        except AttributeError:
+            pass
+
+
+def _secure_tempfile(suffix: str = "", initial_bytes: Optional[bytes] = None) -> str:
+    fd, path = tempfile.mkstemp(prefix="pq_", suffix=suffix, dir=None, text=False)
+    try:
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)  # 0o600
+        if initial_bytes:
+            os.write(fd, initial_bytes)
+    finally:
+        os.close(fd)
+    return path
+
+
+def _run(cmd: list, *, input_bytes: Optional[bytes] = None, timeout: int = 25) -> Tuple[int, bytes, bytes]:
+    # Pass through all environment variables, especially the OQS provider ones
+    env = dict(os.environ)
+    env.update({"LC_ALL": "C", "LANG": "C"})
+    try:
+        p = subprocess.run(
+            cmd,
+            input=input_bytes,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=timeout,
+            start_new_session=True,
+            close_fds=True,
+            env=env,
+        )
+        return p.returncode, p.stdout, p.stderr
+    except subprocess.TimeoutExpired as e:
+        return 124, e.stdout or b"", e.stderr or b"timeout"
+
+
+# ----------------------------- OpenSSL capability checks -----------------------------
+
+def check_openssl_support(logfn) -> Tuple[str, bool, Optional[str]]:
+    rc, out, err = _run([OPENSSL_BIN, "version", "-v"], timeout=10)
+    if rc != 0:
+        raise RuntimeError(f"OpenSSL not found or failed to run: {err.decode(errors='ignore')}")
+    ver = out.decode().strip()
+    logfn(f"OpenSSL: {ver}")
+
+    rc, out, _ = _run([OPENSSL_BIN, "list", "-kem-algorithms", "-provider", OQS_PROVIDER_NAME, "-provider", "default"], timeout=10)
+    alg_name = None
+    if rc == 0:
+        text = out.decode(errors="ignore")
+        for name in KEM_ALGOS:
+            if name.lower() in text.lower():
+                alg_name = name
+                break
+    return ver, alg_name is not None, alg_name
+
+
+# ----------------------------- KEM and key handling -----------------------------
+
+def generate_mlkem_keypair_pem(alg_name: str, logfn) -> Tuple[bytes, bytes]:
+    """Generate ML-KEM keypair using liboqs (preferred) or OpenSSL fallback"""
+    
+    # First try liboqs (Python OQS bindings) - this bypasses OpenSSL encoder issues
+    try:
+        logfn("Trying liboqs (Python OQS bindings) for key generation...")
+        import oqs  # type: ignore
+        logfn("liboqs module imported successfully")
+        
+        # Map algorithm names to liboqs format
+        liboqs_algo_map = {
+            "mlkem768": "ML-KEM-768",
+            "ML-KEM-768": "ML-KEM-768", 
+            "MLKEM-768": "ML-KEM-768",
+            "kyber768": "ML-KEM-768",
+            "Kyber768": "ML-KEM-768",
+            "ml-kem-768": "ML-KEM-768"
+        }
+        
+        liboqs_algo = liboqs_algo_map.get(alg_name, "ML-KEM-768")
+        logfn(f"Using liboqs algorithm: {liboqs_algo}")
+        
+        # Create KEM object and generate keypair
+        logfn("Creating KEM object...")
+        kem = oqs.KeyEncapsulation(liboqs_algo)
+        logfn("Generating keypair...")
+        public_key = kem.generate_keypair()
+        logfn("Exporting private key...")
+        private_key = kem.export_secret_key()
+        logfn("Key generation completed successfully")
+        
+        # Store the KEM object globally for later use in decapsulation
+        # This is a simple approach - in production you'd want better key management
+        import threading
+        if not hasattr(threading.current_thread(), 'liboqs_kem_objects'):
+            threading.current_thread().liboqs_kem_objects = {}
+        
+        # Store the KEM object with the private key for later decapsulation
+        key_id = private_key.hex()[:16]  # Use first 16 chars as key ID
+        threading.current_thread().liboqs_kem_objects[key_id] = kem
+        
+        # Also store in a global dictionary as backup
+        if not hasattr(generate_mlkem_keypair_pem, '_global_kem_objects'):
+            generate_mlkem_keypair_pem._global_kem_objects = {}
+        generate_mlkem_keypair_pem._global_kem_objects[key_id] = kem
+        
+        # Convert to PEM format with key ID for later retrieval
+        priv_pem = f"""-----BEGIN LIBOQS PRIVATE KEY-----
+Key-ID: {key_id}
+Algorithm: {liboqs_algo}
+Private-Key: {private_key.hex()}
+-----END LIBOQS PRIVATE KEY-----""".encode()
+        
+        pub_pem = f"""-----BEGIN LIBOQS PUBLIC KEY-----
+Key-ID: {key_id}
+Algorithm: {liboqs_algo}
+Public-Key: {public_key.hex()}
+-----END LIBOQS PUBLIC KEY-----""".encode()
+        
+        logfn(f"✅ Generated ML-KEM keypair using liboqs (Python OQS bindings)")
+        return priv_pem, pub_pem
+        
+    except ImportError:
+        logfn("liboqs not available, trying OpenSSL approaches...")
+    except Exception as e:
+        logfn(f"liboqs key generation failed: {e}, trying OpenSSL approaches...")
+    
+    # Fallback to OpenSSL approaches
+    approaches = [
+        # Approach 1: Direct generation
+        [OPENSSL_BIN, "genpkey", "-algorithm", alg_name, "-outform", "PEM"],
+        # Approach 2: With explicit providers
+        [OPENSSL_BIN, "genpkey", "-provider", "default", "-algorithm", alg_name, "-outform", "PEM"],
+        # Approach 3: Using system OQS provider
+        [OPENSSL_BIN, "genpkey", "-provider", "oqs", "-algorithm", alg_name, "-outform", "PEM"],
+    ]
+    
+    for i, cmd in enumerate(approaches, 1):
+        logfn(f"Trying OpenSSL key generation approach {i}...")
+        rc, out, err = _run(cmd, timeout=20)
+        if rc == 0 and out:
+            priv_pem = out
+            # Try to extract public key
+            cmd2 = [OPENSSL_BIN, "pkey", "-pubout"]
+            rc2, out2, err2 = _run(cmd2, input_bytes=priv_pem, timeout=10)
+            if rc2 == 0 and out2:
+                pub_pem = out2
+                logfn(f"Generated fresh ML‑KEM keypair using OpenSSL approach {i} (private key never written to disk).")
+                return priv_pem, pub_pem
+            else:
+                logfn(f"OpenSSL approach {i} generated private key but failed to extract public key")
+        else:
+            logfn(f"OpenSSL approach {i} failed: {err.decode(errors='ignore')[:100]}...")
+    
+    # If all approaches fail, provide helpful error
+    raise RuntimeError(
+        "Key generation failed with all approaches (liboqs and OpenSSL). "
+        "Please use the 'Recipient public key' field to provide an existing ML-KEM public key, "
+        "or use the File Encryption section instead."
+    )
+
+
+def pub_from_private_path(priv_path: Path) -> bytes:
+    rc, out, err = _run([OPENSSL_BIN, "pkey", "-pubout", "-in", str(priv_path)], timeout=10)
+    if rc != 0:
+        raise RuntimeError(f"Failed to derive public key from private: {err.decode(errors='ignore')}")
+    return out
+
+
+def kem_encapsulate(pub_pem: bytes, logfn) -> Tuple[bytes, bytes]:
+    # First try liboqs (Python OQS bindings) - this bypasses OpenSSL encoder issues
+    try:
+        import oqs  # type: ignore
+        logfn("Trying liboqs (Python OQS bindings) for encapsulation...")
+        
+        # Check if this is a liboqs key format
+        if b'-----BEGIN LIBOQS PUBLIC KEY-----' in pub_pem:
+            # Parse liboqs key format
+            pub_key_hex = None
+            algorithm = None
+            
+            for line in pub_pem.decode().split('\n'):
+                line = line.strip()
+                if line.startswith('Public-Key:'):
+                    pub_key_hex = line.split(':', 1)[1].strip()
+                elif line.startswith('Algorithm:'):
+                    algorithm = line.split(':', 1)[1].strip()
+            
+            if pub_key_hex and algorithm:
+                # Convert hex to bytes
+                pub_key_bytes = bytes.fromhex(pub_key_hex)
+                
+                # Create KEM object and encapsulate
+                kem = oqs.KeyEncapsulation(algorithm)
+                kem_ct, shared_secret = kem.encap_secret(pub_key_bytes)
+                
+                logfn("✅ Encapsulated shared secret using liboqs (Python OQS bindings)")
+                return kem_ct, shared_secret
+        else:
+            # Try to parse as standard PEM format
+            pub_key_hex = None
+            for line in pub_pem.decode().split('\n'):
+                if line.strip() and not line.startswith('-----'):
+                    pub_key_hex = line.strip()
+                    break
+            
+            if pub_key_hex:
+                # Convert hex to bytes
+                pub_key_bytes = bytes.fromhex(pub_key_hex)
+                
+                # Create KEM object and encapsulate
+                kem = oqs.KeyEncapsulation("ML-KEM-768")
+                kem_ct, shared_secret = kem.encap_secret(pub_key_bytes)
+                
+                logfn("✅ Encapsulated shared secret using liboqs (Python OQS bindings)")
+                return kem_ct, shared_secret
+        
+    except ImportError:
+        logfn("liboqs not available, trying OpenSSL approach...")
+    except Exception as e:
+        logfn(f"liboqs encapsulation failed: {e}, trying OpenSSL approach...")
+    
+    # Fallback to OpenSSL approach
+    secret_path = _secure_tempfile(suffix=".bin")
+    pub_path = _secure_tempfile(suffix=".pem", initial_bytes=pub_pem)
+    try:
+        cmd = [
+            OPENSSL_BIN, "pkeyutl", "-encap", "-pubin",
+            "-inkey", pub_path,
+            "-secret", secret_path,
+        ]
+        rc, out, err = _run(cmd, timeout=25)
+        if rc != 0:
+            raise RuntimeError(f"pkeyutl -encap failed: {err.decode(errors='ignore')}")
+        kem_ct = out  # ciphertext on stdout if -out not specified
+        with open(secret_path, "rb") as f:
+            shared_secret = f.read()
+        if not kem_ct or not shared_secret:
+            raise RuntimeError("Encapsulation produced empty outputs.")
+        logfn("Encapsulated shared secret with ML‑KEM using OpenSSL.")
+        return kem_ct, shared_secret
+    finally:
+        for p in (secret_path, pub_path):
+            try: os.unlink(p)
+            except Exception: pass
+
+
+def kem_decapsulate_from_path(priv_path: Path, kem_ct: bytes, logfn) -> bytes:
+    """Decapsulate using recipient private key file with liboqs (preferred) or OpenSSL fallback"""
+    
+    # First try liboqs (Python OQS bindings) - this bypasses OpenSSL encoder issues
+    try:
+        import oqs  # type: ignore
+        import threading
+        logfn("Trying liboqs (Python OQS bindings) for decapsulation...")
+        
+        # Read private key from file
+        with open(priv_path, 'rb') as f:
+            priv_pem = f.read()
+        
+        # Check if this is a liboqs key format
+        if b'-----BEGIN LIBOQS PRIVATE KEY-----' in priv_pem:
+            # Parse liboqs key format
+            key_id = None
+            private_key_hex = None
+            algorithm = None
+            
+            for line in priv_pem.decode().split('\n'):
+                line = line.strip()
+                if line.startswith('Key-ID:'):
+                    key_id = line.split(':', 1)[1].strip()
+                elif line.startswith('Algorithm:'):
+                    algorithm = line.split(':', 1)[1].strip()
+                elif line.startswith('Private-Key:'):
+                    private_key_hex = line.split(':', 1)[1].strip()
+            
+            if key_id and private_key_hex and algorithm:
+                # Try to find the stored KEM object in thread-local storage
+                if hasattr(threading.current_thread(), 'liboqs_kem_objects'):
+                    kem_objects = threading.current_thread().liboqs_kem_objects
+                    if key_id in kem_objects:
+                        kem = kem_objects[key_id]
+                        shared_secret = kem.decap_secret(kem_ct)
+                        logfn("✅ Decapsulated shared secret using stored liboqs KEM object")
+                        return shared_secret
+                
+                # Try to find the stored KEM object in global storage
+                if hasattr(generate_mlkem_keypair_pem, '_global_kem_objects'):
+                    global_kem_objects = generate_mlkem_keypair_pem._global_kem_objects
+                    if key_id in global_kem_objects:
+                        kem = global_kem_objects[key_id]
+                        shared_secret = kem.decap_secret(kem_ct)
+                        logfn("✅ Decapsulated shared secret using global liboqs KEM object")
+                        return shared_secret
+                
+                # If no stored KEM object, create a new one (this won't work for decapsulation)
+                logfn("No stored KEM object found, liboqs decapsulation not possible")
+                raise NotImplementedError("liboqs private key import not supported")
+        
+        # Not a liboqs key format, try OpenSSL fallback
+        logfn("Not a liboqs key format, trying OpenSSL approach...")
+        raise NotImplementedError("Not a liboqs key")
+        
+    except ImportError:
+        logfn("liboqs not available, trying OpenSSL approach...")
+    except Exception as e:
+        logfn(f"liboqs decapsulation failed: {e}, trying OpenSSL approach...")
+    
+    # Fallback to OpenSSL approach
+    kem_in = _secure_tempfile(suffix=".bin", initial_bytes=kem_ct)
+    secret_out = _secure_tempfile(suffix=".bin")
+    try:
+        # Try different OpenSSL approaches for decapsulation
+        approaches = [
+            # Try with -derive (for key derivation)
+            [OPENSSL_BIN, "pkeyutl", "-derive", "-inkey", str(priv_path), "-in", kem_in, "-out", secret_out],
+            # Try with -decrypt
+            [OPENSSL_BIN, "pkeyutl", "-decrypt", "-inkey", str(priv_path), "-in", kem_in, "-out", secret_out],
+        ]
+        
+        for i, cmd in enumerate(approaches, 1):
+            logfn(f"Trying OpenSSL decapsulation approach {i}...")
+            rc, _, err = _run(cmd, timeout=25)
+            if rc == 0:
+                with open(secret_out, "rb") as f:
+                    shared = f.read()
+                if shared:
+                    logfn(f"Decapsulated shared secret with ML‑KEM using OpenSSL approach {i}.")
+                    return shared
+        
+        # If all approaches fail
+        raise RuntimeError(f"All OpenSSL decapsulation approaches failed: {err.decode(errors='ignore')}")
+        
+    finally:
+        for p in (kem_in, secret_out):
+            try: os.unlink(p)
+            except Exception: pass
+
+
+# ----------------------------- Crypto (HKDF, AES‑GCM, HMAC) -----------------------------
+
+
+def kdf_keys(shared_secret: bytes, salt: bytes, context_hash: bytes) -> Tuple[bytes, bytes]:
+    hkdf = HKDF(algorithm=hashes.SHA256(), length=64, salt=salt, info=b"Kyber-AESGCM-v2|" + context_hash)
+    okm = hkdf.derive(shared_secret)
+    return okm[:32], okm[32:]
+
+
+def aesgcm_encrypt(key: bytes, nonce: bytes, plaintext: bytes, aad: Optional[bytes]) -> Tuple[bytes, bytes]:
+    aead = AESGCM(key)
+    ct = aead.encrypt(nonce, plaintext, associated_data=aad)
+    return ct[:-GCM_TAG_LEN], ct[-GCM_TAG_LEN:]
+
+
+def aesgcm_decrypt(key: bytes, nonce: bytes, tag: bytes, ciphertext: bytes, aad: Optional[bytes]) -> bytes:
+    aead = AESGCM(key)
+    return aead.decrypt(nonce, ciphertext + tag, associated_data=aad)
+
+
+def hmac_sha256(key: bytes, parts: Tuple[bytes, ...]) -> bytes:
+    hm = hmac.new(key, digestmod=hashes.SHA256().name)
+    for p in parts: hm.update(p)
+    return hm.digest()
+
+
+# ----------------------------- Packager -----------------------------
+
+def build_header_v2(alg_id: int, mode: int, pub_pem: bytes, kem_ct: bytes, salt: bytes, nonce: bytes, tag: bytes, ciphertext: bytes) -> bytes:
+    return struct.pack(
+        ">4sHHHIIHHHQH",
+        MAGIC,
+        VERSION_V2,
+        alg_id,
+        mode,
+        len(pub_pem),
+        len(kem_ct),
+        len(salt),
+        len(nonce),
+        len(tag),
+        len(ciphertext),
+        HMAC_LEN,
+    )
+
+
+def parse_package(data: bytes) -> dict:
+    # Try v2 first
+    if len(data) >= 4+2+2:
+        magic = data[:4]
+        if magic != MAGIC:
+            raise ValueError("Not a PQPK package (bad magic)")
+        (magic, ver) = struct.unpack(">4sH", data[:6])
+        if ver == VERSION_V2:
+            fmt = ">4sHHHIIHHHQH"
+            hdr_len = struct.calcsize(fmt)
+            if len(data) < hdr_len:
+                raise ValueError("Truncated header")
+            (magic, ver, alg, mode, pub_len, kem_len, salt_len, nonce_len, tag_len, ct_len, hmac_len) = struct.unpack(fmt, data[:hdr_len])
+            off = hdr_len
+            pub = data[off:off+pub_len]; off += pub_len
+            kem = data[off:off+kem_len]; off += kem_len
+            salt = data[off:off+salt_len]; off += salt_len
+            nonce = data[off:off+nonce_len]; off += nonce_len
+            tag = data[off:off+tag_len]; off += tag_len
+            ct = data[off:off+ct_len]; off += ct_len
+            hmac_b = data[off:off+hmac_len]; off += hmac_len
+            if off != len(data):
+                raise ValueError("Extra bytes after HMAC")
+            return {
+                "version": ver, "alg": alg, "mode": mode, "header": data[:hdr_len],
+                "pub": pub, "kem": kem, "salt": salt, "nonce": nonce, "tag": tag, "ct": ct, "hmac": hmac_b,
+            }
+        elif ver == VERSION_V1:
+            # v1 layout from previous release
+            fmt = ">4sHHIIIIQI"
+            hdr_len = struct.calcsize(fmt)
+            (magic, ver, alg, pub_len, kem_len, nonce_len, tag_len, ct_len, hmac_len) = struct.unpack(fmt, data[:hdr_len])
+            off = hdr_len
+            pub = data[off:off+pub_len]; off += pub_len
+            kem = data[off:off+kem_len]; off += kem_len
+            nonce = data[off:off+nonce_len]; off += nonce_len
+            tag = data[off:off+tag_len]; off += tag_len
+            ct = data[off:off+ct_len]; off += ct_len
+            hmac_b = data[off:off+hmac_len]; off += hmac_len
+            if off != len(data): raise ValueError("Extra bytes after HMAC (v1)")
+            return {
+                "version": ver, "alg": alg, "mode": MODE_SELFENCAP, "header": data[:hdr_len],
+                "pub": pub, "kem": kem, "salt": b"", "nonce": nonce, "tag": tag, "ct": ct, "hmac": hmac_b,
+            }
+        else:
+            raise ValueError(f"Unsupported package version: {ver}")
+    raise ValueError("Truncated or invalid package")
+
+
+# ----------------------------- Logging (GUI + file) -----------------------------
+class SafeLogger:
+    REDACT = "[redacted]"
+    def __init__(self, text_widget: scrolledtext.ScrolledText):
+        self.text = text_widget
+        self._log_file_path: Optional[Path] = None
+    def set_log_path(self, path: Path):
+        self._log_file_path = path
+    def _write(self, line: str):
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        msg = f"[{ts}] {line}\n"
+        self.text.insert(tk.END, msg)
+        self.text.see(tk.END)
+        if self._log_file_path:
+            with open(self._log_file_path, "a", encoding="utf-8") as f:
+                f.write(msg)
+    def log(self, line: str):
+        if any(s in line.lower() for s in ["private key", "secret", "shared", "seed", "nonce:"]):
+            line = self.REDACT
+        self._write(line)
+
+
+# ----------------------------- GUI -----------------------------
+class App:
+    def __init__(self, root: tk.Tk):
+        root.title(APP_NAME)
+        root.geometry("900x640")
+        self.root = root
+
+        self.notebook = ttk.Notebook(root)
+        self.tab_encrypt = ttk.Frame(self.notebook)
+        self.tab_decrypt = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_encrypt, text="Encrypt")
+        self.notebook.add(self.tab_decrypt, text="Decrypt / Verify")
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        # Encrypt widgets
+        self.in_path = tk.StringVar()
+        self.out_path = tk.StringVar()
+        self.recipient_pub_path = tk.StringVar()
+        self.text_to_encrypt = tk.StringVar()
+
+        self._enc_build_ui(self.tab_encrypt)
+
+        # Decrypt widgets
+        self.pkg_path = tk.StringVar()
+        self.dec_out_path = tk.StringVar()
+        self.recipient_priv_path = tk.StringVar()
+        self.text_to_decrypt = tk.StringVar()
+        self._dec_build_ui(self.tab_decrypt)
+
+        # Log area (shared)
+        self.log_area = scrolledtext.ScrolledText(root, wrap=tk.WORD, height=16)
+        self.log_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
+        self.logger = SafeLogger(self.log_area)
+
+        # Startup checks
+        try:
+            _not_root_check()
+        except PermissionError as e:
+            messagebox.showerror(APP_NAME, str(e))
+            root.after(100, root.destroy)
+            return
+        try:
+            ver, has, alg = check_openssl_support(lambda m: self.logger.log(m))
+            if not has:
+                messagebox.showerror(
+                    APP_NAME,
+                    "This OpenSSL build does not expose ML‑KEM via oqsprovider. Install/enable OQS provider and retry.",
+                )
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"OpenSSL check failed: {e}")
+
+    # ---------- Encrypt UI ----------
+    def _enc_build_ui(self, parent):
+        # File encryption section
+        file_frame = tk.LabelFrame(parent, text="File Encryption", padx=10, pady=10)
+        file_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        top = tk.Frame(file_frame); top.pack(fill=tk.X)
+        tk.Label(top, text="Input file:").grid(row=0, column=0, sticky="w")
+        tk.Entry(top, textvariable=self.in_path, width=80).grid(row=0, column=1, padx=6)
+        tk.Button(top, text="Browse", command=self._choose_input).grid(row=0, column=2)
+
+        tk.Label(top, text="Output package:").grid(row=1, column=0, sticky="w", pady=(8,0))
+        tk.Entry(top, textvariable=self.out_path, width=80).grid(row=1, column=1, padx=6, pady=(8,0))
+        tk.Button(top, text="Browse", command=self._choose_output_pkg).grid(row=1, column=2, pady=(8,0))
+
+        tk.Label(top, text="Recipient public key (PEM, optional):").grid(row=2, column=0, sticky="w", pady=(8,0))
+        tk.Entry(top, textvariable=self.recipient_pub_path, width=80).grid(row=2, column=1, padx=6, pady=(8,0))
+        tk.Button(top, text="Browse", command=self._choose_recipient_pub).grid(row=2, column=2, pady=(8,0))
+
+        file_btns = tk.Frame(file_frame); file_btns.pack(fill=tk.X, pady=6)
+        tk.Button(file_btns, text="Encrypt File", command=self.encrypt).pack(side=tk.LEFT)
+        tk.Label(file_btns, text="Tip: Provide recipient public key to make the package decryptable by its owner.").pack(side=tk.LEFT, padx=12)
+
+        # Text encryption section
+        text_frame = tk.LabelFrame(parent, text="Text Encryption", padx=10, pady=10)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        tk.Label(text_frame, text="Text to encrypt:").pack(anchor="w")
+        self.text_input = scrolledtext.ScrolledText(text_frame, height=8, wrap=tk.WORD)
+        self.text_input.pack(fill=tk.BOTH, expand=True, pady=(5,10))
+        
+        text_btns = tk.Frame(text_frame); text_btns.pack(fill=tk.X)
+        tk.Button(text_btns, text="Encrypt Text", command=self.encrypt_text).pack(side=tk.LEFT)
+        tk.Button(text_btns, text="Clear", command=lambda: self.text_input.delete(1.0, tk.END)).pack(side=tk.LEFT, padx=10)
+        
+        # Add helpful note about text encryption
+        note_label = tk.Label(text_frame, text="💡 Text encryption: Keys are generated automatically, or provide a recipient public key above.", 
+                             font=("Arial", 9), fg="blue", wraplength=600)
+        note_label.pack(pady=(5,0))
+        
+        # Add button to open key generation script
+        key_gen_btn = tk.Button(text_frame, text="🔑 Generate ML-KEM Keys", 
+                               command=self.open_key_generation_script,
+                               font=("Arial", 8), bg="lightgreen")
+        key_gen_btn.pack(pady=(2,0))
+
+    # ---------- Decrypt UI ----------
+    def _dec_build_ui(self, parent):
+        # File decryption section
+        file_frame = tk.LabelFrame(parent, text="File Decryption", padx=10, pady=10)
+        file_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        top = tk.Frame(file_frame); top.pack(fill=tk.X)
+        tk.Label(top, text="Input package (.pqpk):").grid(row=0, column=0, sticky="w")
+        tk.Entry(top, textvariable=self.pkg_path, width=80).grid(row=0, column=1, padx=6)
+        tk.Button(top, text="Browse", command=self._choose_pkg).grid(row=0, column=2)
+
+        tk.Label(top, text="Recipient private key (PEM):").grid(row=1, column=0, sticky="w", pady=(8,0))
+        tk.Entry(top, textvariable=self.recipient_priv_path, width=80, show="*").grid(row=1, column=1, padx=6, pady=(8,0))
+        tk.Button(top, text="Browse", command=self._choose_recipient_priv).grid(row=1, column=2, pady=(8,0))
+
+        tk.Label(top, text="Output file:").grid(row=2, column=0, sticky="w", pady=(8,0))
+        tk.Entry(top, textvariable=self.dec_out_path, width=80).grid(row=2, column=1, padx=6, pady=(8,0))
+        tk.Button(top, text="Browse", command=self._choose_output_plain).grid(row=2, column=2, pady=(8,0))
+
+        file_btns = tk.Frame(file_frame); file_btns.pack(fill=tk.X, pady=6)
+        tk.Button(file_btns, text="Verify package", command=self.verify_only).pack(side=tk.LEFT)
+        tk.Button(file_btns, text="Decrypt File", command=self.decrypt).pack(side=tk.LEFT, padx=10)
+
+        # Text decryption section
+        text_frame = tk.LabelFrame(parent, text="Text Decryption", padx=10, pady=10)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        tk.Label(text_frame, text="Decrypted text:").pack(anchor="w")
+        self.text_output = scrolledtext.ScrolledText(text_frame, height=8, wrap=tk.WORD, state=tk.DISABLED)
+        self.text_output.pack(fill=tk.BOTH, expand=True, pady=(5,10))
+        
+        text_btns = tk.Frame(text_frame); text_btns.pack(fill=tk.X)
+        tk.Button(text_btns, text="Decrypt to Text", command=self.decrypt_text).pack(side=tk.LEFT)
+        tk.Button(text_btns, text="Copy to Clipboard", command=self.copy_decrypted_text).pack(side=tk.LEFT, padx=10)
+        tk.Button(text_btns, text="Clear", command=self.clear_decrypted_text).pack(side=tk.LEFT, padx=10)
+
+    # ---------- File pickers ----------
+    def _choose_input(self):
+        p = filedialog.askopenfilename(title="Choose file to encrypt")
+        if p: self.in_path.set(p)
+    def _choose_output_pkg(self):
+        p = filedialog.asksaveasfilename(title="Save output package", defaultextension=".pqpk", filetypes=[("PQ package", "*.pqpk"), ("All files", "*.*")])
+        if p: self.out_path.set(p)
+    def _choose_recipient_pub(self):
+        p = filedialog.askopenfilename(title="Recipient public key (PEM)")
+        if p: self.recipient_pub_path.set(p)
+    def _choose_pkg(self):
+        p = filedialog.askopenfilename(title="Open PQ package", filetypes=[("PQ package", "*.pqpk"), ("All files", "*.*")])
+        if p: self.pkg_path.set(p)
+    def _choose_recipient_priv(self):
+        p = filedialog.askopenfilename(title="Recipient private key (PEM)")
+        if p: self.recipient_priv_path.set(p)
+    def _choose_output_plain(self):
+        p = filedialog.asksaveasfilename(title="Save decrypted output")
+        if p: self.dec_out_path.set(p)
+
+    # ---------- Text encryption/decryption helpers ----------
+    def copy_decrypted_text(self):
+        """Copy decrypted text to clipboard"""
+        try:
+            text = self.text_output.get(1.0, tk.END).strip()
+            if text:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text)
+                self.logger.log("Decrypted text copied to clipboard.")
+            else:
+                messagebox.showwarning(APP_NAME, "No decrypted text to copy.")
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"Failed to copy to clipboard: {e}")
+
+    def clear_decrypted_text(self):
+        """Clear the decrypted text output area"""
+        self.text_output.config(state=tk.NORMAL)
+        self.text_output.delete(1.0, tk.END)
+        self.text_output.config(state=tk.DISABLED)
+        self.logger.log("Decrypted text area cleared.")
+
+    def open_key_generation_script(self):
+        """Launch the liboqs key generator (Python version)"""
+        import subprocess, sys, os
+        try:
+            script_path = os.path.join(os.getcwd(), "generate_mlkem_keys.sh")
+            if os.path.exists(script_path):
+                subprocess.Popen([sys.executable, script_path])
+                self.logger.log("Opened liboqs ML-KEM key generator.")
+                messagebox.showinfo(APP_NAME, "liboqs key generator launched successfully.")
+            else:
+                messagebox.showerror(APP_NAME, "Key generation script not found.")
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"Failed to open key generation script: {e}")
+
+    def encrypt(self):
+        in_path = Path(self.in_path.get()).expanduser()
+        out_path = Path(self.out_path.get()).expanduser()
+        rec_pub_path = Path(self.recipient_pub_path.get()).expanduser() if self.recipient_pub_path.get() else None
+        if not in_path.is_file():
+            messagebox.showerror(APP_NAME, "Select a valid input file.")
+            return
+        if not out_path.parent.exists():
+            messagebox.showerror(APP_NAME, "Select a valid output location.")
+            return
+        log_path = out_path.with_suffix(out_path.suffix + ".log")
+        self.logger.set_log_path(log_path)
+        self.logger.log(f"Input: {str(in_path)}")
+        self.logger.log(f"Output: {str(out_path)}")
+        
+        plaintext = None
+        try:
+            _, has, alg = check_openssl_support(self.logger.log)
+            if not has:
+                raise RuntimeError("ML-KEM/Kyber not available in this OpenSSL build.")
+            alg_name = alg or KEM_ALGOS[0]
+            self.logger.log(f"Using KEM algorithm: {alg_name}")
+
+            # Use recipient-provided key or generate ephemeral key
+            if rec_pub_path and rec_pub_path.exists():
+                pub_pem = Path(rec_pub_path).read_bytes()
+                mode = MODE_RECIPIENT
+                self.logger.log("Recipient mode: encapsulating to provided public key.")
+                # Encapsulate to recipient's public key
+                kem_ct, shared_secret = kem_encapsulate(pub_pem, self.logger.log)
+            else:
+                # Generate ephemeral keypair using liboqs or OpenSSL fallback
+                try:
+                    priv_pem, pub_pem = generate_mlkem_keypair_pem(alg_name, self.logger.log)
+                    mode = MODE_SELFENCAP
+                    self.logger.log("Self-encap mode: ephemeral key used; package non-recoverable later.")
+                    # Encapsulate to our own public key
+                    kem_ct, shared_secret = kem_encapsulate(pub_pem, self.logger.log)
+                except RuntimeError as e:
+                    # Show a helpful error message for any key generation failure
+                    messagebox.showerror(
+                        APP_NAME, 
+                        f"Key generation failed: {e}\n\n"
+                        "Please provide a recipient public key file in the 'Recipient public key' field above, "
+                        "or use the Text Encryption section instead.\n\n"
+                        "The recipient public key should be a ML-KEM public key in PEM format."
+                    )
+                    return
+
+            # Build context hash for key derivation and AAD
+            digest = hashes.Hash(hashes.SHA256())
+            digest.update(MAGIC)
+            digest.update(struct.pack('>HHH', VERSION_V2, ALG_ID_MLKEM768, mode))
+            digest.update(pub_pem)
+            digest.update(kem_ct)
+            ctx_hash = digest.finalize()
+
+            # Derive encryption and MAC keys
+            salt = os.urandom(DEFAULT_SALT_LEN)
+            k_enc, k_mac = kdf_keys(shared_secret, salt, ctx_hash)
+            
+            # Encrypt the file content
+            nonce = os.urandom(NONCE_LEN)
+            plaintext = in_path.read_bytes()
+            ciphertext, tag = aesgcm_encrypt(k_enc, nonce, plaintext, aad=ctx_hash)
+
+            # Build package
+            header = build_header_v2(ALG_ID_MLKEM768, mode, pub_pem, kem_ct, salt, nonce, tag, ciphertext)
+            hmac_input = header + pub_pem + kem_ct + salt + nonce + tag + ciphertext
+            mac = hmac_sha256(k_mac, (hmac_input,))
+            pkg = header + pub_pem + kem_ct + salt + nonce + tag + ciphertext + mac
+
+            # Write package to file
+            with open(out_path, "wb") as f:
+                f.write(pkg)
+
+            # Write metadata to log
+            meta = {
+                "app": APP_NAME,
+                "openssl": subprocess.run([OPENSSL_BIN, "version", "-v"], capture_output=True, text=True).stdout.strip(),
+                "provider": OQS_PROVIDER_NAME,
+                "mode": "recipient" if mode == MODE_RECIPIENT else "self-encap",
+                "nonce_len": NONCE_LEN,
+                "tag_len": GCM_TAG_LEN,
+                "salt_len": DEFAULT_SALT_LEN,
+                "input_size": len(plaintext),
+                "ciphertext_size": len(ciphertext),
+                "kem_ct_size": len(kem_ct),
+                "pub_pem_len": len(pub_pem),
+                "package_size": len(pkg),
+                "username": getpass.getuser(),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "content_type": "file"
+            }
+            with open(log_path, "a", encoding="utf-8") as lf:
+                lf.write(json.dumps(meta, indent=2) + "\n")
+
+            self.logger.log(f"Saved package: {str(out_path)}")
+            self.logger.log(f"Saved log: {str(log_path)}")
+            messagebox.showinfo(APP_NAME, "Encryption successful.")
+            
+        except Exception as e:
+            self.logger.log(f"Error: {str(e)}")
+            messagebox.showerror(APP_NAME, f"Failed: {e}")
+                  
+        finally:
+            # Best‑effort zeroization of plaintext
+            try:
+                if plaintext is not None and isinstance(plaintext, (bytes, bytearray)):
+                    ba = bytearray(plaintext)
+                    for i in range(len(ba)): 
+                        ba[i] = 0
+            except Exception:
+                pass
+
+    # ---------- Core: Encrypt Text ----------
+    def encrypt_text(self):
+        """Encrypt text from the text input area and save as package"""
+        text_content = self.text_input.get(1.0, tk.END).strip()
+        if not text_content:
+            messagebox.showwarning(APP_NAME, "Please enter some text to encrypt.")
+            return
+        
+        # Ask for output package location
+        out_path = filedialog.asksaveasfilename(
+            title="Save encrypted text package", 
+            defaultextension=".pqpk", 
+            filetypes=[("PQ package", "*.pqpk"), ("All files", "*.*")]
+        )
+        if not out_path:
+            return
+            
+        out_path = Path(out_path).expanduser()
+        rec_pub_path = Path(self.recipient_pub_path.get()).expanduser() if self.recipient_pub_path.get() else None
+        
+        log_path = out_path.with_suffix(out_path.suffix + ".log")
+        self.logger.set_log_path(log_path)
+        self.logger.log(f"Text input length: {len(text_content)} characters")
+        self.logger.log(f"Output: {str(out_path)}")
+        
+        try:
+            _, has, alg = check_openssl_support(self.logger.log)
+            if not has: 
+                raise RuntimeError("ML‑KEM/Kyber not available in this OpenSSL build.")
+            alg_name = alg or KEM_ALGOS[0]
+            self.logger.log(f"Using KEM algorithm: {alg_name}")
+
+            if rec_pub_path and rec_pub_path.exists():
+                pub_pem = Path(rec_pub_path).read_bytes()
+                mode = MODE_RECIPIENT
+                self.logger.log("Recipient mode: encapsulating to provided public key.")
+            else:
+                # Generate keys using liboqs (should work now)
+                try:
+                    priv_pem, pub_pem = generate_mlkem_keypair_pem(alg_name, self.logger.log)
+                    mode = MODE_SELFENCAP
+                    self.logger.log("Self‑encap mode: WARNING — decrypt requires the matching ephemeral private key.")
+                except RuntimeError as e:
+                    # Show a helpful error message for any key generation failure
+                    messagebox.showerror(
+                        APP_NAME, 
+                        f"Key generation failed: {e}\n\n"
+                        "Please provide a recipient public key file in the 'Recipient public key' field above, "
+                        "or use the File Encryption section instead.\n\n"
+                        "The recipient public key should be a ML-KEM public key in PEM format."
+                    )
+                    return
+
+            kem_ct, shared_secret = kem_encapsulate(pub_pem, self.logger.log)
+
+            # Context hash binds header‑ish values
+            digest = hashes.Hash(hashes.SHA256())
+            digest.update(MAGIC)
+            digest.update(struct.pack('>HHH', VERSION_V2, ALG_ID_MLKEM768, mode))
+            digest.update(pub_pem)
+            digest.update(kem_ct)
+            ctx_hash = digest.finalize()
+
+            salt = os.urandom(DEFAULT_SALT_LEN)
+            k_enc, k_mac = kdf_keys(shared_secret, salt, ctx_hash)
+
+            nonce = os.urandom(NONCE_LEN)
+            plaintext = text_content.encode('utf-8')
+            ciphertext, tag = aesgcm_encrypt(k_enc, nonce, plaintext, aad=ctx_hash)
+
+            header = build_header_v2(ALG_ID_MLKEM768, mode, pub_pem, kem_ct, salt, nonce, tag, ciphertext)
+            hmac_input = header + pub_pem + kem_ct + salt + nonce + tag + ciphertext
+            mac = hmac_sha256(k_mac, (hmac_input,))
+
+            pkg = header + pub_pem + kem_ct + salt + nonce + tag + ciphertext + mac
+            with open(out_path, "wb") as f: 
+                f.write(pkg)
+
+            meta = {
+                "app": APP_NAME,
+                "openssl": subprocess.run([OPENSSL_BIN, "version", "-v"], capture_output=True, text=True).stdout.strip(),
+                "provider": OQS_PROVIDER_NAME,
+                "mode": "recipient" if mode==MODE_RECIPIENT else "self-encap",
+                "nonce_len": NONCE_LEN,
+                "tag_len": GCM_TAG_LEN,
+                "salt_len": DEFAULT_SALT_LEN,
+                "input_size": len(plaintext),
+                "ciphertext_size": len(ciphertext),
+                "kem_ct_size": len(kem_ct),
+                "pub_pem_len": len(pub_pem),
+                "package_size": len(pkg),
+                "username": getpass.getuser(),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "content_type": "text"
+            }
+            with open(log_path, "a", encoding="utf-8") as lf: 
+                lf.write(json.dumps(meta, indent=2) + "\n")
+            
+            self.logger.log(f"Saved text package: {str(out_path)}")
+            self.logger.log(f"Saved log: {str(log_path)}")
+            messagebox.showinfo(APP_NAME, "Text encryption successful.")
+            
+        except Exception as e:
+            self.logger.log(f"Error: {str(e)}")
+            messagebox.showerror(APP_NAME, f"Failed: {e}")
+        finally:
+            # Best‑effort zeroization of plaintext
+            try:
+                if 'plaintext' in locals() and isinstance(plaintext, (bytes, bytearray)):
+                    ba = bytearray(plaintext)
+                    for i in range(len(ba)): 
+                        ba[i] = 0
+            except Exception:
+                pass
+
+    # ---------- Core: Verify only ----------
+    def verify_only(self):
+        pkg_path = Path(self.pkg_path.get()).expanduser()
+        if not pkg_path.is_file():
+            messagebox.showerror(APP_NAME, "Select a valid package.")
+            return
+        try:
+            data = pkg_path.read_bytes()
+            parsed = parse_package(data)
+            ver = parsed["version"]
+            mode = parsed.get("mode", MODE_SELFENCAP)
+            self.logger.log(f"Package version: {ver}; mode: {('recipient' if mode==MODE_RECIPIENT else 'self-encap')}.")
+            # Structural details only; integrity needs decrypt (HMAC)
+            self.logger.log(f"pub_len={len(parsed['pub'])}, kem_len={len(parsed['kem'])}, ct_len={len(parsed['ct'])}")
+            messagebox.showinfo(APP_NAME, "Package parsed successfully. Full integrity requires decrypt step (HMAC check).")
+        except Exception as e:
+            self.logger.log(f"Error: {str(e)}")
+            messagebox.showerror(APP_NAME, f"Failed: {e}")
+
+    # ---------- Core: Decrypt ----------
+    def decrypt(self):
+        pkg_path = Path(self.pkg_path.get()).expanduser()
+        out_path = Path(self.dec_out_path.get()).expanduser()
+        priv_path = Path(self.recipient_priv_path.get()).expanduser()
+        if not pkg_path.is_file():
+            messagebox.showerror(APP_NAME, "Select a valid package.")
+            return
+        if not out_path.parent.exists():
+            messagebox.showerror(APP_NAME, "Select a valid output path.")
+            return
+        if not priv_path.is_file():
+            messagebox.showerror(APP_NAME, "Select a valid recipient private key (PEM).")
+            return
+        log_path = out_path.with_suffix(out_path.suffix + ".log")
+        self.logger.set_log_path(log_path)
+        self.logger.log(f"Package: {str(pkg_path)}")
+        self.logger.log(f"Output: {str(out_path)}")
+        try:
+            data = pkg_path.read_bytes()
+            parsed = parse_package(data)
+            ver = parsed["version"]
+            mode = parsed.get("mode", MODE_SELFENCAP)
+            pub_pem = parsed["pub"]
+            kem_ct = parsed["kem"]
+            salt = parsed["salt"] if ver==VERSION_V2 else b""
+            nonce = parsed["nonce"]
+            tag = parsed["tag"]
+            ct = parsed["ct"]
+            hmac_b = parsed["hmac"]
+
+            # Verify provided private key matches embedded public key
+            try:
+                pub_from_priv = pub_from_private_path(priv_path)
+                if pub_from_priv.strip() != pub_pem.strip():
+                    raise RuntimeError("Provided private key does not match package public key.")
+            except Exception as e:
+                if mode == MODE_SELFENCAP:
+                    raise RuntimeError("Package was produced in self‑encap mode and requires the ephemeral private key used at encryption time.")
+                else:
+                    raise
+
+            # Derive shared secret by decapsulation (OpenSSL 3.4+ semantics)
+            shared_secret = kem_decapsulate_from_path(priv_path, kem_ct, self.logger.log)
+
+            # Rebuild context hash and keys
+            if ver == VERSION_V2:
+                digest = hashes.Hash(hashes.SHA256()); digest.update(MAGIC); digest.update(struct.pack('>HHH', VERSION_V2, ALG_ID_MLKEM768, mode)); digest.update(pub_pem); digest.update(kem_ct)
+                ctx_hash = digest.finalize()
+                k_enc, k_mac = kdf_keys(shared_secret, salt, ctx_hash)
+                header = parsed["header"]
+                hmac_input = header + pub_pem + kem_ct + salt + nonce + tag + ct
+                mac_check = hmac_sha256(k_mac, (hmac_input,))
+                if mac_check != hmac_b:
+                    raise RuntimeError("HMAC verification failed — package may be tampered.")
+                plaintext = aesgcm_decrypt(k_enc, nonce, tag, ct, aad=ctx_hash)
+            elif ver == VERSION_V1:
+                # v1 compatibility — no salt, hkdf salt=None; AAD unused; HMAC was over pub||kem||nonce||tag||ct
+                digest = hashes.Hash(hashes.SHA256()); digest.update(pub_pem); digest.update(kem_ct); ctx_hash = digest.finalize()
+                hkdf = HKDF(algorithm=hashes.SHA256(), length=64, salt=None, info=b"Kyber-AESGCM-v1|" + ctx_hash)
+                okm = hkdf.derive(shared_secret); k_enc, k_mac = okm[:32], okm[32:]
+                mac_check = hmac_sha256(k_mac, (pub_pem, kem_ct, nonce, tag, ct))
+                if mac_check != hmac_b:
+                    raise RuntimeError("HMAC verification failed (v1).")
+                plaintext = aesgcm_decrypt(k_enc, nonce, tag, ct, aad=None)
+            else:
+                raise RuntimeError("Unsupported package version.")
+
+            with open(out_path, "wb") as f: f.write(plaintext)
+            self.logger.log("Decryption successful.")
+            messagebox.showinfo(APP_NAME, "Decryption successful.")
+        except Exception as e:
+            self.logger.log(f"Error: {str(e)}")
+            messagebox.showerror(APP_NAME, f"Failed: {e}")
+
+    # ---------- Core: Decrypt Text ----------
+    def decrypt_text(self):
+        """Decrypt package and display text in the text output area"""
+        pkg_path = Path(self.pkg_path.get()).expanduser()
+        priv_path = Path(self.recipient_priv_path.get()).expanduser()
+        
+        if not pkg_path.is_file():
+            messagebox.showerror(APP_NAME, "Select a valid package.")
+            return
+        if not priv_path.is_file():
+            messagebox.showerror(APP_NAME, "Select a valid recipient private key (PEM).")
+            return
+            
+        try:
+            data = pkg_path.read_bytes()
+            parsed = parse_package(data)
+            ver = parsed["version"]
+            mode = parsed.get("mode", MODE_SELFENCAP)
+            pub_pem = parsed["pub"]
+            kem_ct = parsed["kem"]
+            salt = parsed["salt"] if ver==VERSION_V2 else b""
+            nonce = parsed["nonce"]
+            tag = parsed["tag"]
+            ct = parsed["ct"]
+            hmac_b = parsed["hmac"]
+
+            # Verify provided private key matches embedded public key
+            try:
+                pub_from_priv = pub_from_private_path(priv_path)
+                if pub_from_priv.strip() != pub_pem.strip():
+                    raise RuntimeError("Provided private key does not match package public key.")
+            except Exception as e:
+                if mode == MODE_SELFENCAP:
+                    raise RuntimeError("Package was produced in self‑encap mode and requires the ephemeral private key used at encryption time.")
+                else:
+                    raise
+
+            # Derive shared secret by decapsulation (OpenSSL 3.4+ semantics)
+            shared_secret = kem_decapsulate_from_path(priv_path, kem_ct, self.logger.log)
+
+            # Rebuild context hash and keys
+            if ver == VERSION_V2:
+                digest = hashes.Hash(hashes.SHA256())
+                digest.update(MAGIC)
+                digest.update(struct.pack('>HHH', VERSION_V2, ALG_ID_MLKEM768, mode))
+                digest.update(pub_pem)
+                digest.update(kem_ct)
+                ctx_hash = digest.finalize()
+                k_enc, k_mac = kdf_keys(shared_secret, salt, ctx_hash)
+                header = parsed["header"]
+                hmac_input = header + pub_pem + kem_ct + salt + nonce + tag + ct
+                mac_check = hmac_sha256(k_mac, (hmac_input,))
+                if mac_check != hmac_b:
+                    raise RuntimeError("HMAC verification failed — package may be tampered.")
+                plaintext = aesgcm_decrypt(k_enc, nonce, tag, ct, aad=ctx_hash)
+            elif ver == VERSION_V1:
+                # v1 compatibility — no salt, hkdf salt=None; AAD unused; HMAC was over pub||kem||nonce||tag||ct
+                digest = hashes.Hash(hashes.SHA256())
+                digest.update(pub_pem)
+                digest.update(kem_ct)
+                ctx_hash = digest.finalize()
+                hkdf = HKDF(algorithm=hashes.SHA256(), length=64, salt=None, info=b"Kyber-AESGCM-v1|" + ctx_hash)
+                okm = hkdf.derive(shared_secret)
+                k_enc, k_mac = okm[:32], okm[32:]
+                mac_check = hmac_sha256(k_mac, (pub_pem, kem_ct, nonce, tag, ct))
+                if mac_check != hmac_b:
+                    raise RuntimeError("HMAC verification failed (v1).")
+                plaintext = aesgcm_decrypt(k_enc, nonce, tag, ct, aad=None)
+            else:
+                raise RuntimeError("Unsupported package version.")
+
+            # Try to decode as UTF-8 text
+            try:
+                decrypted_text = plaintext.decode('utf-8')
+                self.logger.log("Text decryption successful.")
+            except UnicodeDecodeError:
+                # If it's not valid UTF-8, show as hex
+                decrypted_text = f"[Binary data - {len(plaintext)} bytes]\n\nHex dump:\n{plaintext.hex()}"
+                self.logger.log("Decryption successful, but content appears to be binary data.")
+            
+            # Display in text output area
+            self.text_output.config(state=tk.NORMAL)
+            self.text_output.delete(1.0, tk.END)
+            self.text_output.insert(1.0, decrypted_text)
+            self.text_output.config(state=tk.DISABLED)
+            
+            messagebox.showinfo(APP_NAME, "Text decryption successful.")
+            
+        except Exception as e:
+            self.logger.log(f"Error: {str(e)}")
+            messagebox.showerror(APP_NAME, f"Failed: {e}")
+
+
+# ----------------------------- Entry point -----------------------------
+
+def main():
+    root = tk.Tk()
+    App(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

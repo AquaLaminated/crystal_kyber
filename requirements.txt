@@ -1,0 +1,4 @@
+cryptography
+pyperclip
+tk
+liboqs-python

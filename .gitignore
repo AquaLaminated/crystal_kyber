@@ -1,0 +1,12 @@
+__pycache__/
+oqs_env/
+dist/
+build/
+*.log
+*.pem
+*.pqpk
+*.spec
+*.pyc
+*.pyo
+liboqs-python/
+liboqs/
