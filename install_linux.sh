@@ -40,6 +40,8 @@ except ImportError:
     os.chdir("..")
     run(["pip", "install", "liboqs-python"])
     print("✅ liboqs-python installed successfully.")
+
+
 PY
 
 # 4️⃣ Verify
