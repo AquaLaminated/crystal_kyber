@@ -16,7 +16,11 @@ Built with Python 3, Tkinter, and liboqs (Open Quantum Safe).
 ---
 
 ## 🧰 Installation
+To install PQ Packager (Kyber) on Linux:
+
+
 ```bash
-git clone https://github.com/<yourusername>/crystal_kyber.git
+git clone https://github.com/AquaLaminated/crystal_kyber.git
 cd crystal_kyber
 bash install_linux.sh
+./run_gui.sh
