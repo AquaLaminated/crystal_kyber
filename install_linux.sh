@@ -51,7 +51,7 @@ except ImportError:
 
     # Clone or update liboqs
     if not os.path.exists("liboqs"):
-        run(["git", "clone", "https://github.com/open-quantum-safe/liboqs.git"])
+run(["git", "clone", "--branch", "main", "https://github.com/open-quantum-safe/liboqs.git"])
     else:
         print("⚙️ Updating existing liboqs repo...")
         os.chdir("liboqs")
