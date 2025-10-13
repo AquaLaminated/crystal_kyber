@@ -25,16 +25,53 @@ pip install -r requirements.txt || {
 # 4️⃣ Try liboqs build (if missing)
 echo "🔧 Checking liboqs..."
 python3 - <<'PY'
+import subprocess, sys, os
+
+def run(cmd):
+    print("▶", " ".join(cmd))
+    subprocess.run(cmd, check=True)
+
 try:
     import oqs
     print("✅ liboqs already installed.")
 except ImportError:
-    import subprocess
-    print("🔧 Installing liboqs-python from source...")
-    subprocess.run(["git", "clone", "https://github.com/open-quantum-safe/liboqs-python.git"], check=True)
-    subprocess.run(["pip", "install", "./liboqs-python"], check=True)
+    print("🔧 liboqs not found, installing from source...")
+
+    home = os.path.expanduser("~")
+    build_dir = os.path.join(home, "_oqs_build")
+    os.makedirs(build_dir, exist_ok=True)
+    os.chdir(build_dir)
+
+    # Clone the latest liboqs repo
+    try:
+        run(["git", "clone", "https://github.com/open-quantum-safe/liboqs.git"])
+    except subprocess.CalledProcessError:
+        print("⚠️ liboqs already exists, skipping clone.")
+
+    os.chdir("liboqs")
+
+    # Checkout main branch (0.14.1 no longer exists)
+    run(["git", "checkout", "main"])
+    run(["mkdir", "-p", "build"])
+    os.chdir("build")
+
+    # Configure and build shared library
+    run(["cmake", "-DOQS_BUILD_ONLY_LIB=ON", "-DBUILD_SHARED_LIBS=ON", "-DCMAKE_INSTALL_PREFIX=/usr/local", ".."])
+    run(["make", "-j", str(os.cpu_count())])
+    run(["sudo", "make", "install"])
+
+    # Export library path
+    os.environ["LD_LIBRARY_PATH"] = "/usr/local/lib:" + os.environ.get("LD_LIBRARY_PATH", "")
+    print("✅ liboqs built and installed successfully.")
+
+    # Install Python bindings
+    os.chdir(build_dir)
+    run(["git", "clone", "https://github.com/open-quantum-safe/liboqs-python.git"])
+    os.chdir("liboqs-python")
+    run([sys.executable, "-m", "pip", "install", "."])
     print("✅ liboqs-python installed successfully.")
 PY
+
 
 # 5️⃣ Run test
 echo "🧪 Verifying liboqs functionality..."
