@@ -1,20 +1,15 @@
 #!/bin/bash
 set -e
 
-echo "🔐 PQ Packager (Kyber) Linux Installer"
-echo "======================================"
+echo "🐧 Installing Crystal Kyber for Linux"
+echo "====================================="
 
-# 1️⃣ Dependencies
-echo "📦 Installing system packages..."
-sudo apt update -y
-sudo apt install -y python3 python3-venv python3-tk python3-pip git openssl
-
-# 2️⃣ Virtual environment
-echo "🐍 Setting up Python venv..."
+# 1️⃣ Create Python virtual environment
+echo "📦 Setting up virtual environment..."
 python3 -m venv oqs_env
 source oqs_env/bin/activate
 
-# 3️⃣ Python deps
+# 2️⃣ Install dependencies
 echo "📥 Installing Python packages..."
 pip install --upgrade pip
 pip install -r requirements.txt || {
@@ -22,93 +17,36 @@ pip install -r requirements.txt || {
   pip install cryptography pyperclip tk
 }
 
-# 4️⃣ Try liboqs build (if missing)
+# 3️⃣ Install liboqs if missing
 echo "🔧 Checking liboqs..."
 python3 - <<'PY'
-import subprocess, sys, os, ctypes
+import subprocess, sys, os, time
 
 def run(cmd):
     print("▶", " ".join(cmd))
     subprocess.run(cmd, check=True)
 
-def check_liboqs():
-    try:
-        ctypes.CDLL("liboqs.so")
-        return True
-    except OSError:
-        return False
-
 try:
     import oqs
-    print("✅ liboqs already installed and importable.")
+    print("✅ liboqs already installed and usable.")
 except ImportError:
-    print("🔧 liboqs not found, building from source...")
-
-    home = os.path.expanduser("~")
-    build_dir = os.path.join(home, "_oqs_build")
-    os.makedirs(build_dir, exist_ok=True)
-    os.chdir(build_dir)
-
-    # Clone or update liboqs
-    if not os.path.exists("liboqs"):
-run(["git", "clone", "--branch", "main", "https://github.com/open-quantum-safe/liboqs.git"])
-    else:
-        print("⚙️ Updating existing liboqs repo...")
-        os.chdir("liboqs")
-        run(["git", "fetch", "--all"])
-        run(["git", "checkout", "main"])
-        run(["git", "pull"])
-        os.chdir("..")
-
+    print("liboqs not found, installing it in", os.path.expanduser("~/_oqs"))
+    time.sleep(5)
+    run(["git", "clone", "--branch", "main", "https://github.com/open-quantum-safe/liboqs.git"])
     os.chdir("liboqs")
-    run(["mkdir", "-p", "build"])
-    os.chdir("build")
-
-    # Build and install shared library
-    run(["cmake", "-DOQS_BUILD_ONLY_LIB=ON", "-DBUILD_SHARED_LIBS=ON", "-DCMAKE_INSTALL_PREFIX=/usr/local", ".."])
-    run(["make", "-j", str(os.cpu_count())])
-    run(["sudo", "make", "install"])
-
-    # Refresh linker cache
-    run(["sudo", "ldconfig"])
-
-    print("✅ liboqs built and installed successfully.")
-
-    # Install Python bindings
-    os.chdir(build_dir)
-    if not os.path.exists("liboqs-python"):
-        run(["git", "clone", "https://github.com/open-quantum-safe/liboqs-python.git"])
-    os.chdir("liboqs-python")
-    run([sys.executable, "-m", "pip", "install", "."])
+    run(["cmake", "-B", "build", "-DCMAKE_INSTALL_PREFIX=/usr/local"])
+    run(["cmake", "--build", "build"])
+    run(["sudo", "cmake", "--install", "build"])
+    os.chdir("..")
+    run(["pip", "install", "liboqs-python"])
     print("✅ liboqs-python installed successfully.")
-
-# Final sanity check
-print("🔍 Verifying liboqs shared library availability...")
-if check_liboqs():
-    print("✅ liboqs shared library successfully loaded.")
-else:
-    print("❌ liboqs installation incomplete. GUI functions will be disabled.")
-    sys.exit(1)
 PY
 
-# 5️⃣ Run test
+# 4️⃣ Verify
 echo "🧪 Verifying liboqs functionality..."
-python3 - <<'PY'
-try:
-    import oqs
-    print("✅ Available KEMs:", oqs.get_enabled_kem_mechanisms())
-except Exception as e:
-    print("❌ liboqs verification failed:", e)
-PY
+source oqs_env/bin/activate
+python3 -c "import oqs; print('✅ Available KEMs:', oqs.get_enabled_kem_mechanisms())"
 
-
-# 5️⃣ Run test
-echo "🧪 Verifying liboqs functionality..."
-python3 - <<'PY'
-import oqs
-print("✅ Available KEMs:", oqs.get_enabled_kem_mechanisms())
-print("✅ Available SIGs:", oqs.get_enabled_sig_mechanisms())
-PY
-
-echo "✅ Installation complete!"
-echo "Run the app using: ./run_gui.sh"
+# 5️⃣ Launch
+echo "🚀 Launching Kyber app..."
+python3 "pce kyber"
