@@ -74,7 +74,7 @@ def run_command(cmd: list, input_data: Optional[str] = None, timeout: int = 30) 
 def generate_mlkem_keypair() -> Tuple[bytes, bytes]:
     """Generate ML-KEM keypair with multiple approaches"""
     
-    print("🔐 Generating ML-KEM keypair...")
+    print("Generating ML-KEM keypair...")
     
     # List of approaches to try
     approaches = [
@@ -99,7 +99,7 @@ def generate_mlkem_keypair() -> Tuple[bytes, bytes]:
     
     try:
         for i, approach in enumerate(approaches, 1):
-            print(f"🔐 Trying approach {i}: {approach['name']}")
+            print(f"Trying approach {i}: {approach['name']}")
             
             if approach.get("file_based"):
                 # File-based approach
@@ -116,12 +116,12 @@ def generate_mlkem_keypair() -> Tuple[bytes, bytes]:
                         
                         if rc2 == 0 and out2:
                             pub_pem = out2.encode()
-                            print(f"✅ Success with approach {i}: {approach['name']}")
+                            print(f"Success with approach {i}: {approach['name']}")
                             return priv_pem, pub_pem
                     except Exception as e:
-                        print(f"❌ Approach {i} failed at file reading: {e}")
+                        print(f"Approach {i} failed at file reading: {e}")
                 else:
-                    print(f"❌ Approach {i} failed: {err[:100]}...")
+                    print(f"Approach {i} failed: {err[:100]}...")
             else:
                 # Direct output approach
                 rc, out, err = run_command(approach["cmd"])
@@ -133,12 +133,12 @@ def generate_mlkem_keypair() -> Tuple[bytes, bytes]:
                     if rc2 == 0 and out2:
                         priv_pem = out.encode()
                         pub_pem = out2.encode()
-                        print(f"✅ Success with approach {i}: {approach['name']}")
+                        print(f"Success with approach {i}: {approach['name']}")
                         return priv_pem, pub_pem
                     else:
-                        print(f"❌ Approach {i} failed at public key extraction")
+                        print(f"Approach {i} failed at public key extraction")
                 else:
-                    print(f"❌ Approach {i} failed: {err[:100]}...")
+                    print(f"Approach {i} failed: {err[:100]}...")
     
     finally:
         # Clean up temp files
@@ -150,10 +150,10 @@ def generate_mlkem_keypair() -> Tuple[bytes, bytes]:
                 pass
     
     # All approaches failed
-    print(f"\n⚠️  All key generation approaches failed.")
+    print(f"\n All key generation approaches failed.")
     print("This is due to OpenSSL encoder configuration issues on this system.")
     print("The ML-KEM algorithm is working correctly for encryption/decryption.")
-    print("\n🔧 PRACTICAL SOLUTIONS:")
+    print("\nPRACTICAL SOLUTIONS:")
     print("1. Use File Encryption section in the Kyber application (works immediately)")
     print("2. Ask the recipient to generate keys using this same application")
     print("3. Use a system where OpenSSL key generation works properly")
@@ -220,7 +220,7 @@ def create_helpful_templates() -> Tuple[str, str]:
         return priv_file, pub_file
         
     except Exception as e:
-        print(f"⚠️  Could not create template files: {e}")
+        print(f" Could not create template files: {e}")
         return None, None
 
 def save_keypair(priv_pem: bytes, pub_pem: bytes, base_name: str = "mlkem_keypair") -> Tuple[str, str]:
@@ -273,7 +273,7 @@ Examples:
     
     args = parser.parse_args()
     
-    print("🔐 Simple ML-KEM Key Generator")
+    print("Simple ML-KEM Key Generator")
     print("=" * 40)
     print("Practical solution for current system setup")
     print()
@@ -283,63 +283,63 @@ Examples:
         setup_environment()
         
         # Check ML-KEM support
-        print("🔍 Checking ML-KEM support...")
+        print("Checking ML-KEM support...")
         if not check_mlkem_support():
-            print("❌ ML-KEM support not available")
+            print("ML-KEM support not available")
             print("Please ensure the OQS provider is properly installed.")
             sys.exit(1)
         
-        print("✅ ML-KEM support detected")
+        print("ML-KEM support detected")
         
         # Generate keypair
-        print(f"\n🔑 Generating ML-KEM keypair...")
+        print(f"\nGenerating ML-KEM keypair...")
         priv_pem, pub_pem = generate_mlkem_keypair()
         
         if priv_pem is None or pub_pem is None:
-            print(f"\n⚠️  Key generation failed, but creating helpful template files...")
+            print(f"\n Key generation failed, but creating helpful template files...")
             priv_file, pub_file = create_helpful_templates()
             
             if priv_file and pub_file:
-                print(f"\n📁 Created helpful template files:")
+                print(f"\nCreated helpful template files:")
                 print(f"  Private key template: {priv_file}")
                 print(f"  Public key template:  {pub_file}")
                 print(f"  These files contain detailed instructions for manual key generation.")
             else:
-                print(f"\n❌ Could not create template files")
+                print(f"\nCould not create template files")
             
-            print(f"\n🔧 To use the Kyber application right now:")
+            print(f"\nTo use the Kyber application right now:")
             print(f"  1. Use File Encryption section (works immediately)")
             print(f"  2. Create a text file with your message")
             print(f"  3. Encrypt it directly using the File Encryption section")
             return
         
         # Save keypair
-        print(f"\n💾 Saving keypair...")
+        print(f"\nSaving keypair...")
         priv_file, pub_file = save_keypair(priv_pem, pub_pem, args.output)
         
         # Success
-        print(f"\n🎉 ML-KEM key generation completed successfully!")
-        print(f"\n📁 Generated files:")
+        print(f"\nML-KEM key generation completed successfully!")
+        print(f"\nGenerated files:")
         print(f"  Private key: {priv_file}")
         print(f"  Public key:  {pub_file}")
         
-        print(f"\n📖 Usage instructions:")
+        print(f"\nUsage instructions:")
         print(f"  1. Use {pub_file} as the 'Recipient public key' in the Kyber application")
         print(f"  2. Keep {priv_file} secure - it's needed for decryption")
         print(f"  3. Never share the private key file")
         
         if args.verbose:
-            print(f"\n🔍 Key information:")
+            print(f"\nKey information:")
             print(f"  Private key size: {len(priv_pem)} bytes")
             print(f"  Public key size:  {len(pub_pem)} bytes")
             print(f"  Algorithm: ML-KEM-768")
             print(f"  Format: PEM")
         
     except KeyboardInterrupt:
-        print("\n\n⚠️  Operation cancelled by user")
+        print("\n\n Operation cancelled by user")
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\nError: {e}")
         if args.verbose:
             import traceback
             traceback.print_exc()

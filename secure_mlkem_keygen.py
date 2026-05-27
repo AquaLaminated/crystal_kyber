@@ -157,7 +157,7 @@ def generate_mlkem_keypair_secure() -> Tuple[bytes, bytes]:
     
     try:
         for i, approach in enumerate(approaches, 1):
-            print(f"🔐 Trying approach {i}: {approach['name']}")
+            print(f"Trying approach {i}: {approach['name']}")
             
             if approach.get("file_based"):
                 # File-based approach
@@ -176,12 +176,12 @@ def generate_mlkem_keypair_secure() -> Tuple[bytes, bytes]:
                     rc2, pub_out, err2 = run_secure_command(pub_cmd, timeout=15)
                     
                     if rc2 == 0 and pub_out:
-                        print(f"✅ Success with approach {i}: {approach['name']}")
+                        print(f"Success with approach {i}: {approach['name']}")
                         return priv_pem, pub_out
                     else:
-                        print(f"❌ Approach {i} failed at public key extraction")
+                        print(f"Approach {i} failed at public key extraction")
                 else:
-                    print(f"❌ Approach {i} failed: {err.decode('utf-8', errors='ignore')[:100]}...")
+                    print(f"Approach {i} failed: {err.decode('utf-8', errors='ignore')[:100]}...")
             else:
                 # Direct output approach
                 rc, out, err = run_secure_command(approach["cmd"], timeout=30)
@@ -192,12 +192,12 @@ def generate_mlkem_keypair_secure() -> Tuple[bytes, bytes]:
                     rc2, pub_out, err2 = run_secure_command(pub_cmd, input_data=out, timeout=15)
                     
                     if rc2 == 0 and pub_out:
-                        print(f"✅ Success with approach {i}: {approach['name']}")
+                        print(f"Success with approach {i}: {approach['name']}")
                         return out, pub_out
                     else:
-                        print(f"❌ Approach {i} failed at public key extraction")
+                        print(f"Approach {i} failed at public key extraction")
                 else:
-                    print(f"❌ Approach {i} failed: {err.decode('utf-8', errors='ignore')[:100]}...")
+                    print(f"Approach {i} failed: {err.decode('utf-8', errors='ignore')[:100]}...")
     
     finally:
         # Secure cleanup
@@ -277,10 +277,10 @@ Examples:
     
     # Validate output name
     if not args.output.replace("_", "").replace("-", "").isalnum():
-        print("❌ Error: Output name must contain only alphanumeric characters, hyphens, and underscores")
+        print("Error: Output name must contain only alphanumeric characters, hyphens, and underscores")
         sys.exit(1)
     
-    print("🔐 Secure ML-KEM Key Generator")
+    print("Secure ML-KEM Key Generator")
     print("=" * 40)
     
     try:
@@ -288,63 +288,63 @@ Examples:
         setup_secure_environment()
         
         # Check ML-KEM support
-        print("🔍 Checking ML-KEM support...")
+        print("Checking ML-KEM support...")
         if not check_mlkem_support():
-            print("❌ ML-KEM support not available")
+            print("ML-KEM support not available")
             print("Please ensure the OQS provider is properly installed and configured.")
             sys.exit(1)
         
-        print("✅ ML-KEM support detected")
+        print("ML-KEM support detected")
         
         if args.check_only:
-            print("✅ ML-KEM support check completed successfully")
+            print("ML-KEM support check completed successfully")
             return
         
         # Generate keypair
-        print("\n🔑 Generating ML-KEM keypair...")
+        print("\nGenerating ML-KEM keypair...")
         priv_pem, pub_pem = generate_mlkem_keypair_secure()
         
         # Save keypair securely
-        print("\n💾 Saving keypair securely...")
+        print("\nSaving keypair securely...")
         priv_file, pub_file = save_keypair_secure(priv_pem, pub_pem, args.output)
         
         # Verify keypair
-        print("\n🔍 Verifying keypair...")
+        print("\nVerifying keypair...")
         if len(priv_pem) < 100 or len(pub_pem) < 100:
             raise RuntimeError("Generated keys appear to be invalid")
         
         # Success
-        print("\n🎉 Key generation completed successfully!")
-        print(f"\n📁 Generated files:")
+        print("\nKey generation completed successfully!")
+        print(f"\nGenerated files:")
         print(f"  Private key: {priv_file}")
         print(f"  Public key:  {pub_file}")
         
         # Security information
-        print(f"\n🔒 Security features applied:")
+        print(f"\nSecurity features applied:")
         print(f"  - File permissions: 0600 (owner read/write only)")
         print(f"  - Secure random generation")
         print(f"  - Memory protection")
         print(f"  - Input validation")
         
         # Usage instructions
-        print(f"\n📖 Usage instructions:")
+        print(f"\nUsage instructions:")
         print(f"  1. Use {pub_file} as the 'Recipient public key' in the Kyber application")
         print(f"  2. Keep {priv_file} secure - it's needed for decryption")
         print(f"  3. Never share the private key file")
         print(f"  4. Consider backing up keys securely")
         
         if args.verbose:
-            print(f"\n🔍 Key information:")
+            print(f"\nKey information:")
             print(f"  Private key size: {len(priv_pem)} bytes")
             print(f"  Public key size:  {len(pub_pem)} bytes")
             print(f"  Algorithm: ML-KEM-768")
             print(f"  Format: PEM")
         
     except KeyboardInterrupt:
-        print("\n\n⚠️  Operation cancelled by user")
+        print("\n\n Operation cancelled by user")
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\nError: {e}")
         if args.verbose:
             import traceback
             traceback.print_exc()

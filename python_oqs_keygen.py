@@ -45,8 +45,8 @@ def check_python_oqs_available() -> bool:
 
 def install_python_oqs_instructions():
     """Provide instructions for installing Python OQS"""
-    print("📦 Python OQS bindings not found or wrong package installed.")
-    print("\n🔧 To install the correct Python OQS bindings:")
+    print("Python OQS bindings not found or wrong package installed.")
+    print("\nTo install the correct Python OQS bindings:")
     print("1. Activate your virtual environment:")
     print("   source oqs_env/bin/activate")
     print("\n2. Uninstall wrong package (if installed):")
@@ -62,7 +62,7 @@ def generate_mlkem_keypair_python_oqs(algorithm: str = "ML-KEM-768") -> Tuple[by
     try:
         import oqs
         
-        print(f"🔐 Generating ML-KEM keypair using Python OQS ({algorithm})...")
+        print(f"Generating ML-KEM keypair using Python OQS ({algorithm})...")
         
         # Create KEM object
         kem = oqs.KeyEncapsulation(algorithm)
@@ -82,15 +82,15 @@ def generate_mlkem_keypair_python_oqs(algorithm: str = "ML-KEM-768") -> Tuple[by
 {public_key.hex()}
 -----END PUBLIC KEY-----""".encode()
         
-        print(f"✅ Successfully generated ML-KEM keypair using Python OQS")
+        print(f"Successfully generated ML-KEM keypair using Python OQS")
         return priv_pem, pub_pem
         
     except ImportError:
-        print("❌ Python OQS bindings not available")
+        print("Python OQS bindings not available")
         install_python_oqs_instructions()
         return None, None
     except Exception as e:
-        print(f"❌ Python OQS key generation failed: {e}")
+        print(f"Python OQS key generation failed: {e}")
         return None, None
 
 def generate_mlkem_keypair_cryptography_fallback() -> Tuple[bytes, bytes]:
@@ -100,7 +100,7 @@ def generate_mlkem_keypair_cryptography_fallback() -> Tuple[bytes, bytes]:
         import tempfile
         import os
         
-        print("🔐 Trying fallback approach with existing OQS provider...")
+        print("Trying fallback approach with existing OQS provider...")
         
         # Try to use the existing OQS provider installation
         local_install_path = "/tmp/local_install"
@@ -145,7 +145,7 @@ def generate_mlkem_keypair_cryptography_fallback() -> Tuple[bytes, bytes]:
                                 os.unlink("temp_priv.pem")
                             except:
                                 pass
-                            print(f"   ✅ Fallback approach {i} succeeded!")
+                            print(f"   Fallback approach {i} succeeded!")
                             return priv_pem, pub_pem
                 else:
                     # Direct output approach
@@ -158,17 +158,17 @@ def generate_mlkem_keypair_cryptography_fallback() -> Tuple[bytes, bytes]:
                         if pub_result.returncode == 0 and pub_result.stdout:
                             priv_pem = result.stdout.encode()
                             pub_pem = pub_result.stdout.encode()
-                            print(f"   ✅ Fallback approach {i} succeeded!")
+                            print(f"   Fallback approach {i} succeeded!")
                             return priv_pem, pub_pem
             except Exception as e:
-                print(f"   ❌ Fallback approach {i} failed: {e}")
+                print(f"   Fallback approach {i} failed: {e}")
                 continue
         
-        print("   ❌ All fallback approaches failed")
+        print("   All fallback approaches failed")
         return None, None
         
     except Exception as e:
-        print(f"❌ Fallback approach failed: {e}")
+        print(f"Fallback approach failed: {e}")
         return None, None
 
 def secure_file_write(path: str, data: bytes) -> None:
@@ -244,10 +244,10 @@ Examples:
     
     # Validate output name
     if not args.output.replace("_", "").replace("-", "").isalnum():
-        print("❌ Error: Output name must contain only alphanumeric characters, hyphens, and underscores")
+        print("Error: Output name must contain only alphanumeric characters, hyphens, and underscores")
         sys.exit(1)
     
-    print("🐍 Python OQS ML-KEM Key Generator")
+    print("Python OQS ML-KEM Key Generator")
     print("=" * 40)
     print("Direct liboqs bindings - bypasses OpenSSL encoder issues")
     print()
@@ -255,43 +255,43 @@ Examples:
     try:
         # Check if Python OQS is available
         if not check_python_oqs_available():
-            print("❌ Python OQS bindings not available")
-            print("🔧 Trying fallback approach with existing OQS provider...")
+            print("Python OQS bindings not available")
+            print("Trying fallback approach with existing OQS provider...")
         else:
-            print("✅ Python OQS bindings detected")
+            print("Python OQS bindings detected")
         
         # Generate keypair using Python OQS
         priv_pem, pub_pem = generate_mlkem_keypair_python_oqs(args.algorithm)
         
         if priv_pem is None or pub_pem is None:
-            print("\n⚠️  Python OQS key generation failed")
+            print("\n Python OQS key generation failed")
             print("Trying fallback approach...")
             priv_pem, pub_pem = generate_mlkem_keypair_cryptography_fallback()
             
             if priv_pem is None or pub_pem is None:
-                print("\n❌ All key generation approaches failed")
+                print("\nAll key generation approaches failed")
                 print("Please install Python OQS bindings:")
                 print("  pip3 install oqs")
                 sys.exit(1)
         
         # Save keypair securely
-        print("\n💾 Saving keypair securely...")
+        print("\nSaving keypair securely...")
         priv_file, pub_file = save_keypair_secure(priv_pem, pub_pem, args.algorithm, args.output)
         
         # Success
-        print("\n🎉 Python OQS ML-KEM key generation completed successfully!")
-        print(f"\n📁 Generated files:")
+        print("\nPython OQS ML-KEM key generation completed successfully!")
+        print(f"\nGenerated files:")
         print(f"  Private key: {priv_file}")
         print(f"  Public key:  {pub_file}")
         
         # Usage instructions
-        print(f"\n📖 Usage instructions:")
+        print(f"\nUsage instructions:")
         print(f"  1. Use {pub_file} as the 'Recipient public key' in the Kyber application")
         print(f"  2. Keep {priv_file} secure - it's needed for decryption")
         print(f"  3. Never share the private key file")
         
         if args.verbose:
-            print(f"\n🔍 Key information:")
+            print(f"\nKey information:")
             print(f"  Algorithm: {args.algorithm}")
             print(f"  Private key size: {len(priv_pem)} bytes")
             print(f"  Public key size:  {len(pub_pem)} bytes")
@@ -299,10 +299,10 @@ Examples:
             print(f"  Format: PEM")
         
     except KeyboardInterrupt:
-        print("\n\n⚠️  Operation cancelled by user")
+        print("\n\n Operation cancelled by user")
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\nError: {e}")
         if args.verbose:
             import traceback
             traceback.print_exc()

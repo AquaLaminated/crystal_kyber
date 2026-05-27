@@ -1,11 +1,11 @@
-# 🔐 PQ Packager (Kyber) — Linux Edition
+# PQ Packager (Kyber) — Linux Edition
 
 A **post-quantum encryption GUI** using **ML-KEM (aka Kyber)** for key exchange and **AES-256-GCM** for authenticated encryption.  
 Built with Python 3, Tkinter, and liboqs (Open Quantum Safe).
 
 ---
 
-## ✨ Features
+## Features
 - ML-KEM-768 (Kyber) key encapsulation
 - AES-256-GCM encryption with HKDF-SHA-256 key derivation
 - HMAC-SHA-256 integrity protection
@@ -15,7 +15,7 @@ Built with Python 3, Tkinter, and liboqs (Open Quantum Safe).
 
 ---
 
-## 🧰 Installation
+## Installation
 To install PQ Packager (Kyber) on Linux:
 
 
@@ -27,7 +27,7 @@ bash install_linux.sh
 
 
 
-🚀 Using Crystal Kyber
+Using Crystal Kyber
 
 Open the program — GUI appears.
 
@@ -52,7 +52,7 @@ Logs are automatically sanitized (no sensitive data stored).
 
 
 
-🧠 Technical Overview
+Technical Overview
 Component	Purpose
 liboqs	Provides ML-KEM (Kyber) implementation
 oqs-provider	Integrates liboqs with OpenSSL 3 provider framework

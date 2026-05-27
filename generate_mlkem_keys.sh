@@ -8,7 +8,7 @@ import base64
 import oqs
 from pathlib import Path
 
-print("🔐 liboqs ML-KEM Key Generator (FIPS/PQC Compliant)")
+print("liboqs ML-KEM Key Generator (FIPS/PQC Compliant)")
 print("===================================================")
 
 # Initialize KEM
@@ -34,7 +34,7 @@ priv_pem = (
 Path("mlkem_public_key.pem").write_bytes(pub_pem)
 Path("mlkem_private_key.pem").write_bytes(priv_pem)
 
-print("✅ Generated ML-KEM-768 keypair using liboqs.")
+print("Generated ML-KEM-768 keypair using liboqs.")
 print("   Private key: mlkem_private_key.pem")
 print("   Public key:  mlkem_public_key.pem")
 print("\n�� Keep your private key secure!")

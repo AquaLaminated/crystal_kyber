@@ -138,7 +138,7 @@ def check_fips_mlkem_support() -> Tuple[bool, List[str]]:
 def generate_fips_mlkem_keypair(variant: str = "mlkem768") -> Tuple[bytes, bytes]:
     """Generate FIPS/PQC compliant ML-KEM keypair using liboqs via OQS provider"""
     
-    print(f"🔐 Generating FIPS/PQC compliant ML-KEM keypair ({variant})...")
+    print(f"Generating FIPS/PQC compliant ML-KEM keypair ({variant})...")
     print("Using liboqs via OQS OpenSSL provider with FIPS-203 compliance")
     
     # FIPS-compliant key generation approaches
@@ -185,7 +185,7 @@ def generate_fips_mlkem_keypair(variant: str = "mlkem768") -> Tuple[bytes, bytes
     
     try:
         for i, approach in enumerate(approaches, 1):
-            print(f"🔐 Trying approach {i}: {approach['name']}")
+            print(f"Trying approach {i}: {approach['name']}")
             
             if approach.get("file_based"):
                 # File-based approach with atomic writes
@@ -211,17 +211,17 @@ def generate_fips_mlkem_keypair(variant: str = "mlkem768") -> Tuple[bytes, bytes
                         rc2, pub_out, err2 = run_fips_command(pub_cmd, timeout=15)
                         
                         if rc2 == 0 and pub_out:
-                            print(f"✅ Success with approach {i}: {approach['name']}")
+                            print(f"Success with approach {i}: {approach['name']}")
                             
                             # Perform pairwise consistency test (PCT)
                             if perform_pct_test(priv_pem, pub_out, variant):
                                 return priv_pem, pub_out
                             else:
-                                print(f"⚠️  PCT failed for approach {i}, trying next approach...")
+                                print(f" PCT failed for approach {i}, trying next approach...")
                     except Exception as e:
-                        print(f"❌ Approach {i} failed at file reading: {e}")
+                        print(f"Approach {i} failed at file reading: {e}")
                 else:
-                    print(f"❌ Approach {i} failed: {err.decode('utf-8', errors='ignore')[:100]}...")
+                    print(f"Approach {i} failed: {err.decode('utf-8', errors='ignore')[:100]}...")
             else:
                 # Direct output approach
                 rc, out, err = run_fips_command(approach["cmd"], timeout=30)
@@ -236,17 +236,17 @@ def generate_fips_mlkem_keypair(variant: str = "mlkem768") -> Tuple[bytes, bytes
                     rc2, pub_out, err2 = run_fips_command(pub_cmd, input_data=out, timeout=15)
                     
                     if rc2 == 0 and pub_out:
-                        print(f"✅ Success with approach {i}: {approach['name']}")
+                        print(f"Success with approach {i}: {approach['name']}")
                         
                         # Perform pairwise consistency test (PCT)
                         if perform_pct_test(out, pub_out, variant):
                             return out, pub_out
                         else:
-                            print(f"⚠️  PCT failed for approach {i}, trying next approach...")
+                            print(f" PCT failed for approach {i}, trying next approach...")
                     else:
-                        print(f"❌ Approach {i} failed at public key extraction")
+                        print(f"Approach {i} failed at public key extraction")
                 else:
-                    print(f"❌ Approach {i} failed: {err.decode('utf-8', errors='ignore')[:100]}...")
+                    print(f"Approach {i} failed: {err.decode('utf-8', errors='ignore')[:100]}...")
     
     finally:
         # Secure cleanup
@@ -258,18 +258,18 @@ def generate_fips_mlkem_keypair(variant: str = "mlkem768") -> Tuple[bytes, bytes
                 pass
     
     # All approaches failed - provide practical solutions
-    print(f"\n⚠️  All FIPS/PQC compliant key generation approaches failed for {variant}.")
+    print(f"\n All FIPS/PQC compliant key generation approaches failed for {variant}.")
     print("This is due to OpenSSL encoder configuration issues on this system.")
     print("The liboqs library and OQS provider are properly installed and working.")
-    print("\n🔧 PRACTICAL SOLUTIONS:")
+    print("\nPRACTICAL SOLUTIONS:")
     print("1. Use File Encryption section in the Kyber application (works immediately)")
     print("2. Ask the recipient to generate keys using this same application")
     print("3. Use a system where OpenSSL key generation works properly")
     print("4. Use pre-generated ML-KEM keys from other sources")
-    print("\n✅ The ML-KEM algorithm is working correctly for encryption/decryption")
+    print("\nThe ML-KEM algorithm is working correctly for encryption/decryption")
     print("   - Only automatic key generation has limitations")
     print("   - All other functionality works perfectly")
-    print("\n📖 To use the Kyber application right now:")
+    print("\nTo use the Kyber application right now:")
     print("   - Go to File Encryption section")
     print("   - Create a text file with your message")
     print("   - Encrypt it directly (no keys needed)")
@@ -281,7 +281,7 @@ def generate_fips_mlkem_keypair(variant: str = "mlkem768") -> Tuple[bytes, bytes
 
 def perform_pct_test(priv_pem: bytes, pub_pem: bytes, variant: str) -> bool:
     """Perform Pairwise Consistency Test (PCT) - FIPS requirement"""
-    print(f"🔍 Performing Pairwise Consistency Test (PCT) for {variant}...")
+    print(f"Performing Pairwise Consistency Test (PCT) for {variant}...")
     
     temp_files = []
     
@@ -312,7 +312,7 @@ def perform_pct_test(priv_pem: bytes, pub_pem: bytes, variant: str) -> bool:
         
         rc1, out1, err1 = run_fips_command(encap_cmd, timeout=20)
         if rc1 != 0:
-            print(f"❌ PCT failed: Encapsulation failed - {err1.decode('utf-8', errors='ignore')[:100]}")
+            print(f"PCT failed: Encapsulation failed - {err1.decode('utf-8', errors='ignore')[:100]}")
             return False
         
         # Perform decapsulation (using private key)
@@ -330,7 +330,7 @@ def perform_pct_test(priv_pem: bytes, pub_pem: bytes, variant: str) -> bool:
         
         rc2, out2, err2 = run_fips_command(decap_cmd, timeout=20)
         if rc2 != 0:
-            print(f"❌ PCT failed: Decapsulation failed - {err2.decode('utf-8', errors='ignore')[:100]}")
+            print(f"PCT failed: Decapsulation failed - {err2.decode('utf-8', errors='ignore')[:100]}")
             return False
         
         # Compare shared secrets
@@ -341,14 +341,14 @@ def perform_pct_test(priv_pem: bytes, pub_pem: bytes, variant: str) -> bool:
             decap_secret = f.read()
         
         if encap_secret == decap_secret:
-            print(f"✅ PCT passed: Shared secrets match ({len(encap_secret)} bytes)")
+            print(f"PCT passed: Shared secrets match ({len(encap_secret)} bytes)")
             return True
         else:
-            print(f"❌ PCT failed: Shared secrets don't match")
+            print(f"PCT failed: Shared secrets don't match")
             return False
             
     except Exception as e:
-        print(f"❌ PCT failed with exception: {e}")
+        print(f"PCT failed with exception: {e}")
         return False
     finally:
         # Secure cleanup
@@ -459,13 +459,13 @@ def create_helpful_templates(variant: str):
         atomic_write(priv_file, priv_template.encode())
         atomic_write(pub_file, pub_template.encode())
         
-        print(f"\n📁 Created helpful template files:")
+        print(f"\nCreated helpful template files:")
         print(f"  Private key template: {priv_file}")
         print(f"  Public key template:  {pub_file}")
         print(f"  These files contain detailed instructions for manual key generation.")
         
     except Exception as e:
-        print(f"⚠️  Could not create template files: {e}")
+        print(f" Could not create template files: {e}")
 
 def main():
     """Main function with FIPS/PQC compliant argument parsing"""
@@ -506,10 +506,10 @@ Examples:
     
     # Validate output name
     if not args.output.replace("_", "").replace("-", "").isalnum():
-        print("❌ Error: Output name must contain only alphanumeric characters, hyphens, and underscores")
+        print("Error: Output name must contain only alphanumeric characters, hyphens, and underscores")
         sys.exit(1)
     
-    print("🔐 FIPS/PQC Compliant ML-KEM Key Generator")
+    print("FIPS/PQC Compliant ML-KEM Key Generator")
     print("=" * 50)
     print("Using liboqs via OQS OpenSSL provider")
     print("FIPS-203 compliant with proper security practices")
@@ -520,48 +520,48 @@ Examples:
         setup_fips_environment()
         
         # Check FIPS/PQC ML-KEM support
-        print("🔍 Checking FIPS/PQC ML-KEM support...")
+        print("Checking FIPS/PQC ML-KEM support...")
         has_support, variants = check_fips_mlkem_support()
         
         if not has_support:
-            print("❌ FIPS/PQC ML-KEM support not available")
+            print("FIPS/PQC ML-KEM support not available")
             print("Please ensure liboqs and OQS OpenSSL provider are properly installed.")
             sys.exit(1)
         
-        print(f"✅ FIPS/PQC ML-KEM support detected")
-        print(f"✅ Available variants: {', '.join(variants)}")
+        print(f"FIPS/PQC ML-KEM support detected")
+        print(f"Available variants: {', '.join(variants)}")
         
         if args.variant not in variants:
-            print(f"❌ Requested variant {args.variant} not available")
+            print(f"Requested variant {args.variant} not available")
             print(f"Available variants: {', '.join(variants)}")
             sys.exit(1)
         
         if args.check_only:
-            print("✅ FIPS/PQC ML-KEM support check completed successfully")
+            print("FIPS/PQC ML-KEM support check completed successfully")
             return
         
         # Generate FIPS-compliant keypair
-        print(f"\n🔑 Generating FIPS/PQC compliant ML-KEM keypair ({args.variant})...")
+        print(f"\nGenerating FIPS/PQC compliant ML-KEM keypair ({args.variant})...")
         priv_pem, pub_pem = generate_fips_mlkem_keypair(args.variant)
         
         # Check if key generation succeeded
         if priv_pem is None or pub_pem is None:
-            print(f"\n⚠️  Key generation failed, but helpful template files were created.")
+            print(f"\n Key generation failed, but helpful template files were created.")
             print(f"Please follow the instructions in the template files to generate keys manually.")
             return
         
         # Save keypair with FIPS compliance
-        print("\n💾 Saving keypair with FIPS compliance...")
+        print("\nSaving keypair with FIPS compliance...")
         priv_file, pub_file = save_fips_keypair(priv_pem, pub_pem, args.variant, args.output)
         
         # Success
-        print("\n🎉 FIPS/PQC compliant key generation completed successfully!")
-        print(f"\n📁 Generated files:")
+        print("\nFIPS/PQC compliant key generation completed successfully!")
+        print(f"\nGenerated files:")
         print(f"  Private key: {priv_file}")
         print(f"  Public key:  {pub_file}")
         
         # FIPS compliance information
-        print(f"\n🔒 FIPS/PQC compliance features applied:")
+        print(f"\nFIPS/PQC compliance features applied:")
         print(f"  - liboqs via OQS OpenSSL provider (vetted implementation)")
         print(f"  - FIPS-203 compliant with proper 64-byte seed handling")
         print(f"  - Constant-time math and side-channel protections")
@@ -572,27 +572,27 @@ Examples:
         print(f"  - Roundtrip testing (encapsulation + decapsulation)")
         
         # Usage instructions
-        print(f"\n📖 Usage instructions:")
+        print(f"\nUsage instructions:")
         print(f"  1. Use {pub_file} as the 'Recipient public key' in the Kyber application")
         print(f"  2. Keep {priv_file} secure - it's needed for decryption")
         print(f"  3. Never share the private key file")
         print(f"  4. Consider encrypting private key at rest (PKCS#8 with passphrase)")
         
         if args.verbose:
-            print(f"\n🔍 Key information:")
+            print(f"\nKey information:")
             print(f"  Variant: {args.variant}")
             print(f"  Private key size: {len(priv_pem)} bytes")
             print(f"  Public key size:  {len(pub_pem)} bytes")
             print(f"  Algorithm: ML-KEM-{args.variant[-3:]}")
             print(f"  Format: PEM")
-            print(f"  FIPS-203 compliance: ✅")
-            print(f"  PCT performed: ✅")
+            print(f"  FIPS-203 compliance: ")
+            print(f"  PCT performed: ")
         
     except KeyboardInterrupt:
-        print("\n\n⚠️  Operation cancelled by user")
+        print("\n\n Operation cancelled by user")
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\nError: {e}")
         if args.verbose:
             import traceback
             traceback.print_exc()

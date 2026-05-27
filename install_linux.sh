@@ -1,18 +1,18 @@
 #!/bin/bash
 set -e
 
-echo "🐧 Crystal Kyber Linux Installer"
+echo "Crystal Kyber Linux Installer"
 echo "================================"
 
-# 1️⃣ Python virtual environment
-echo "📦 Creating Python venv..."
+# 1Python virtual environment
+echo "Creating Python venv..."
 python3 -m venv oqs_env
 source oqs_env/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt || pip install cryptography pyperclip tk liboqs-python
 
-# 2️⃣ Build liboqs (if missing)
-echo "🔧 Checking liboqs..."
+# 2Build liboqs (if missing)
+echo "Checking liboqs..."
 if [ ! -f /usr/local/lib/liboqs.a ]; then
   sudo rm -rf /tmp/liboqs
   git clone https://github.com/open-quantum-safe/liboqs.git /tmp/liboqs
@@ -25,11 +25,11 @@ if [ ! -f /usr/local/lib/liboqs.a ]; then
   cd ~
   rm -rf /tmp/liboqs
 else
-  echo "✅ liboqs already installed."
+  echo "liboqs already installed."
 fi
 
-# 3️⃣ Build oqs-provider
-echo "🔧 Checking oqs-provider..."
+# 3Build oqs-provider
+echo "Checking oqs-provider..."
 if [ ! -f /usr/lib/x86_64-linux-gnu/ossl-modules/oqsprovider.so ]; then
   sudo rm -rf /tmp/oqs-provider
   git clone https://github.com/open-quantum-safe/oqs-provider.git /tmp/oqs-provider
@@ -42,18 +42,18 @@ if [ ! -f /usr/lib/x86_64-linux-gnu/ossl-modules/oqsprovider.so ]; then
   cd ~
   rm -rf /tmp/oqs-provider
 else
-  echo "✅ oqsprovider.so already installed."
+  echo "oqsprovider.so already installed."
 fi
 
-# 4️⃣ Configure venv environment
-echo "⚙️  Setting up OpenSSL/OQS environment..."
+# 4Configure venv environment
+echo " Setting up OpenSSL/OQS environment..."
 {
   echo 'export OPENSSL_MODULES=/usr/lib/x86_64-linux-gnu/ossl-modules'
   echo 'export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH'
   echo 'export OPENSSL_CONF=$VIRTUAL_ENV/openssl.cnf'
 } >> oqs_env/bin/activate
 
-# 5️⃣ Write OpenSSL config
+# 5Write OpenSSL config
 cat > oqs_env/openssl.cnf <<'EOF'
 # OpenSSL configuration file for OQS provider
 openssl_conf = openssl_init
@@ -77,15 +77,15 @@ module = /usr/lib/x86_64-linux-gnu/ossl-modules/oqsprovider.so
 fips_mode = no
 EOF
 
-# 6️⃣ Verify installation
-echo "🧪 Verifying setup..."
+# 6Verify installation
+echo "Verifying setup..."
 source oqs_env/bin/activate
-openssl list -providers | grep oqsprovider || echo "⚠️  Warning: OQS provider not detected"
-openssl list -kem-algorithms -provider oqsprovider -provider default | grep mlkem || echo "⚠️  ML-KEM not found"
+openssl list -providers | grep oqsprovider || echo " Warning: OQS provider not detected"
+openssl list -kem-algorithms -provider oqsprovider -provider default | grep mlkem || echo " ML-KEM not found"
 
-# 7️⃣ Done
+# 7Done
 echo ""
-echo "🎉 Crystal Kyber installed successfully!"
+echo "Crystal Kyber installed successfully!"
 echo "To run:"
 echo "  cd $(pwd)"
 echo "  source oqs_env/bin/activate && ./launch_kyber.sh"

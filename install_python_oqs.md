@@ -1,6 +1,6 @@
 # Python OQS Installation Guide
 
-## 🐍 Installing Python OQS Bindings (ChatGPT Recommended)
+## Installing Python OQS Bindings (ChatGPT Recommended)
 
 The Python OQS bindings provide direct access to ML-KEM without OpenSSL encoder issues.
 
@@ -44,7 +44,7 @@ python3 -m ensurepip --user
 python3 -m pip install --user oqs
 ```
 
-## 🚀 After Installation
+## After Installation
 
 1. **Test the installation:**
    ```bash
@@ -52,11 +52,11 @@ python3 -m pip install --user oqs
    ```
 
 2. **Use in Kyber application:**
-   - Click "🔑 Generate ML-KEM Keys" button
+   - Click "Generate ML-KEM Keys" button
    - The Python OQS generator will open
    - Follow the instructions
 
-## ✅ Benefits of Python OQS
+## Benefits of Python OQS
 
 - **Bypasses OpenSSL encoder issues**
 - **Direct liboqs bindings**
@@ -64,14 +64,14 @@ python3 -m pip install --user oqs
 - **No OpenSSL dependencies**
 - **Recommended by ChatGPT**
 
-## 🔧 Troubleshooting
+## Troubleshooting
 
 If you get permission errors:
 - Use virtual environment (Option 3)
 - Use user installation (Option 4)
 - Check Python version compatibility
 
-## 📖 Usage
+## Usage
 
 ```bash
 # Generate ML-KEM-768 keys
